@@ -24,13 +24,11 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
-from PIL import Image
+from PIL import Image, ImageDraw
 
 from detector import (
     Component,
     find_coloured_markers,
-    find_geometry_markers,
-    find_markers,
     offset_components,
     track_template_point,
 )
@@ -186,69 +184,6 @@ class AppState:
             self.image.save(output, format="PNG")
             return output.getvalue()
 
-    def detect(self, payload: dict[str, Any]) -> dict[str, Any]:
-        roi_values = payload.get("roi")
-        sample_values = payload.get("sample")
-        tolerance = int(payload.get("tolerance", 5))
-        if not isinstance(roi_values, list) or len(roi_values) != 4:
-            raise ValueError("roi must contain four coordinates")
-        if not isinstance(sample_values, list) or len(sample_values) != 2:
-            raise ValueError("sample must contain two coordinates")
-        with self.lock:
-            if self.image is None:
-                raise RuntimeError("Capture the phone screen first")
-            image = self.image.copy()
-
-        left, top, right, bottom = map(int, roi_values)
-        left = max(0, min(image.width - 1, left))
-        top = max(0, min(image.height - 1, top))
-        right = max(left + 1, min(image.width, right))
-        bottom = max(top + 1, min(image.height, bottom))
-        sample_x, sample_y = map(int, sample_values)
-        if not (left <= sample_x < right and top <= sample_y < bottom):
-            raise ValueError("The sampled marker must be inside the canvas region")
-        tolerance = max(0, min(40, tolerance))
-
-        crop = image.crop((left, top, right, bottom))
-        max_marker_dimension = max(24, min(crop.width, crop.height) // 20)
-        nearby_search_radius = max(32, min(crop.width, crop.height) // 18)
-        rgb, sample, local_markers = find_markers(
-            crop,
-            (sample_x - left, sample_y - top),
-            tolerance=tolerance,
-            max_sample_dimension=max_marker_dimension,
-            nearby_search_radius=nearby_search_radius,
-        )
-        max_sample_width = max(24, crop.width // 10)
-        max_sample_height = max(24, crop.height // 10)
-        max_sample_area = max(576, (crop.width * crop.height) // 100)
-        if (
-            sample.width > max_sample_width
-            or sample.height > max_sample_height
-            or sample.area > max_sample_area
-        ):
-            raise ValueError(
-                f"The sampled area is {sample.width}×{sample.height}, much too large for a "
-                "mini-square. Click the solid interior of one small marker."
-            )
-        markers = offset_components(local_markers, left, top)
-        with self.lock:
-            self.roi = (left, top, right, bottom)
-            self.markers = markers
-            self.marker_colours = [rgb] * len(markers)
-        return {
-            "rgb": list(rgb),
-            "sampleSize": [sample.width, sample.height, sample.area],
-            "markers": [
-                {
-                    "bounds": [m.left, m.top, m.right, m.bottom],
-                    "center": list(m.center),
-                    "area": m.area,
-                }
-                for m in markers
-            ],
-        }
-
     def detect_mixed(self, payload: dict[str, Any]) -> dict[str, Any]:
         roi_values = payload.get("roi")
         sample_values = payload.get("sample")
@@ -286,6 +221,23 @@ class AppState:
         tolerance = max(0, min(40, tolerance))
 
         crop = image.crop((left, top, right, bottom))
+        region_mask = None
+        polygon = payload.get("polygon")
+        if polygon is not None:
+            if not isinstance(polygon, list) or not 3 <= len(polygon) <= 200:
+                raise ValueError("Region needs 3 to 200 corners")
+            points = []
+            for point in polygon:
+                if not isinstance(point, list) or len(point) != 2:
+                    raise ValueError("Each region corner needs two coordinates")
+                x, y = map(int, point)
+                if not (0 <= x <= image.width and 0 <= y <= image.height):
+                    raise ValueError("Region corner is outside the screen")
+                points.append((x - left, y - top))
+            region_mask = Image.new("L", crop.size, 0)
+            ImageDraw.Draw(region_mask).polygon(points, fill=255)
+            if not region_mask.getpixel((sample_x - left, sample_y - top)):
+                raise ValueError("Sample inside the selected region")
         max_marker_dimension = max(24, min(crop.width, crop.height) // 20)
         nearby_search_radius = max(32, min(crop.width, crop.height) // 18)
         sample, local_markers = find_coloured_markers(
@@ -313,6 +265,10 @@ class AppState:
         marker_colours: list[tuple[int, int, int]] = []
         response_markers: list[dict[str, Any]] = []
         for item in local_markers:
+            if region_mask is not None:
+                c = item.component
+                if region_mask.crop((c.left, c.top, c.right + 1, c.bottom + 1)).getextrema()[0] != 255:
+                    continue
             component = offset_components([item.component], left, top)[0]
             markers.append(component)
             marker_colours.append(item.rgb)
@@ -337,113 +293,9 @@ class AppState:
             },
         }
 
-    def detect_geometry(self, payload: dict[str, Any]) -> dict[str, Any]:
-        """Detect sampled-size components without profiles or palette lists."""
-        roi_values = payload.get("roi")
-        sample_values = payload.get("sample")
-        if not isinstance(roi_values, list) or len(roi_values) != 4:
-            raise ValueError("roi must contain four coordinates")
-        if not isinstance(sample_values, list) or len(sample_values) != 2:
-            raise ValueError("sample must contain two coordinates")
-
-        with self.lock:
-            if self.image is None:
-                raise RuntimeError("Capture the phone screen first")
-            image = self.image.copy()
-        left, top, right, bottom = map(int, roi_values)
-        left = max(0, min(image.width - 1, left))
-        top = max(0, min(image.height - 1, top))
-        right = max(left + 1, min(image.width, right))
-        bottom = max(top + 1, min(image.height, bottom))
-        sample_x, sample_y = map(int, sample_values)
-        if not (left <= sample_x < right and top <= sample_y < bottom):
-            raise ValueError("The sampled marker must be inside the canvas region")
-
-        crop = image.crop((left, top, right, bottom))
-        max_marker_dimension = max(24, min(crop.width, crop.height) // 20)
-        nearby_search_radius = max(32, min(crop.width, crop.height) // 18)
-        sample, local_markers = find_geometry_markers(
-            crop,
-            (sample_x - left, sample_y - top),
-            max_sample_dimension=max_marker_dimension,
-            nearby_search_radius=nearby_search_radius,
-        )
-        max_sample_width = max(24, crop.width // 10)
-        max_sample_height = max(24, crop.height // 10)
-        max_sample_area = max(576, (crop.width * crop.height) // 100)
-        if (
-            sample.width > max_sample_width
-            or sample.height > max_sample_height
-            or sample.area > max_sample_area
-        ):
-            raise ValueError(
-                f"The sampled area is {sample.width}x{sample.height}, much too large for a "
-                "mini-square. Click the solid interior of one small marker."
-            )
-
-        markers: list[Component] = []
-        marker_colours: list[tuple[int, int, int]] = []
-        response_markers: list[dict[str, Any]] = []
-        for item in local_markers:
-            component = offset_components([item.component], left, top)[0]
-            markers.append(component)
-            marker_colours.append(item.rgb)
-            response_markers.append(
-                {
-                    "bounds": [component.left, component.top, component.right, component.bottom],
-                    "center": list(component.center),
-                    "area": component.area,
-                    "rgb": list(item.rgb),
-                }
-            )
-        with self.lock:
-            self.roi = (left, top, right, bottom)
-            self.markers = markers
-            self.marker_colours = marker_colours
-        return {
-            "sampleSize": [sample.width, sample.height, sample.area],
-            "markers": response_markers,
-            "colourCount": len(set(marker_colours)),
-        }
-
-    def start_queue(self, payload: dict[str, Any]) -> dict[str, Any]:
-        indices = payload.get("indices")
-        minimum = float(payload.get("minDelay", 0.01))
-        maximum = float(payload.get("maxDelay", 0.08))
-        if not isinstance(indices, list) or not all(isinstance(i, int) for i in indices):
-            raise ValueError("indices must be a list of marker numbers")
-        minimum = max(0.01, min(5.0, minimum))
-        maximum = max(minimum, min(5.0, maximum))
-
-        with self.lock:
-            if self.worker and self.worker.is_alive():
-                raise RuntimeError("A tap queue is already running")
-            if len(set(indices)) != len(indices):
-                raise ValueError("Duplicate marker indices are not allowed")
-            if any(index < 0 or index >= len(self.markers) for index in indices):
-                raise ValueError("A marker index is outside the current reviewed detection set")
-            taps = [self.markers[index].center for index in indices]
-            if not taps:
-                raise ValueError("No reviewed pixels were selected")
-            self.stop_event.clear()
-            self.queue_status = {
-                "state": "running",
-                "completed": 0,
-                "total": len(taps),
-                "message": "Queue started; Paint will not be pressed",
-            }
-            self.worker = threading.Thread(
-                target=self._queue_worker,
-                args=(taps, minimum, maximum),
-                daemon=True,
-            )
-            self.worker.start()
-        return dict(self.queue_status)
-
     def start_mixed_queue(self, payload: dict[str, Any]) -> dict[str, Any]:
         indices = payload.get("indices")
         eyedropper = payload.get("eyedropper")
-        group_by_colour = bool(payload.get("groupByColour", True))
         minimum = float(payload.get("minDelay", 0.01))
         maximum = float(payload.get("maxDelay", 0.08))
         if not isinstance(indices, list) or not all(isinstance(i, int) for i in indices):
@@ -481,100 +333,15 @@ class AppState:
                 "state": "running",
                 "completed": 0,
                 "total": len(tasks),
-                "message": (
-                    "Grouped mixed queue started; Paint will not be pressed"
-                    if group_by_colour
-                    else "Per-pixel mixed queue started; Paint will not be pressed"
-                ),
+                "message": "Grouped mixed queue started; Paint will not be pressed",
             }
             self.worker = threading.Thread(
-                target=(
-                    self._mixed_grouped_queue_worker
-                    if group_by_colour
-                    else self._mixed_queue_worker
-                ),
+                target=self._mixed_grouped_queue_worker,
                 args=(tasks, picker_point, reference_image, minimum, maximum),
                 daemon=True,
             )
             self.worker.start()
         return dict(self.queue_status)
-
-    def _queue_worker(
-        self, taps: list[tuple[int, int]], minimum: float, maximum: float
-    ) -> None:
-        completed = 0
-        try:
-            for position, (x, y) in enumerate(taps, start=1):
-                if self.stop_event.is_set():
-                    self._set_status("stopped", completed, len(taps), "Stopped; Paint was not pressed")
-                    return
-                self.adb.tap(x, y)
-                completed += 1
-                self._set_status(
-                    "running",
-                    completed,
-                    len(taps),
-                    f"Queued {completed}/{len(taps)} at ({x}, {y})",
-                )
-                if position < len(taps) and self.stop_event.wait(random.uniform(minimum, maximum)):
-                    self._set_status("stopped", completed, len(taps), "Stopped; Paint was not pressed")
-                    return
-            self._set_status(
-                "complete",
-                completed,
-                len(taps),
-                "Queue complete. Review the phone and press Paint yourself if correct.",
-            )
-        except Exception as exc:
-            self._set_status("error", completed, len(taps), f"ADB failed: {exc}")
-
-    def _mixed_queue_worker(
-        self,
-        tasks: list[tuple[tuple[int, int], tuple[int, int, int]]],
-        eyedropper: tuple[int, int],
-        reference_image: Image.Image,
-        minimum: float,
-        maximum: float,
-    ) -> None:
-        completed = 0
-
-        def wait_between_actions() -> bool:
-            return self.stop_event.wait(random.uniform(minimum, maximum))
-
-        try:
-            for center, rgb in tasks:
-                if self.stop_event.is_set():
-                    self._set_status("stopped", completed, len(tasks), "Stopped; Paint was not pressed")
-                    return
-                # One pixel activates the picker, samples the template marker,
-                # then queues that colour at the same position.
-                self.adb.press(*eyedropper)
-                if wait_between_actions():
-                    self._set_status("stopped", completed, len(tasks), "Stopped after eyedropper activation")
-                    return
-                self.adb.tap(*center)
-                if wait_between_actions():
-                    self._set_status("stopped", completed, len(tasks), "Stopped after colour sample")
-                    return
-                self.adb.tap(*center)
-                completed += 1
-                self._set_status(
-                    "running",
-                    completed,
-                    len(tasks),
-                    f"Mixed pixel {completed}/{len(tasks)} RGB {rgb} at {center}",
-                )
-                if completed < len(tasks) and wait_between_actions():
-                    self._set_status("stopped", completed, len(tasks), "Stopped; Paint was not pressed")
-                    return
-            self._set_status(
-                "complete",
-                completed,
-                len(tasks),
-                "Mixed queue complete. Review the phone and press Paint yourself if correct.",
-            )
-        except Exception as exc:
-            self._set_status("error", completed, len(tasks), f"ADB failed: {exc}")
 
     def _mixed_grouped_queue_worker(
         self,
@@ -733,14 +500,8 @@ def make_handler(state: AppState, token: str) -> type[BaseHTTPRequestHandler]:
                 payload = self._payload()
                 if parsed.path == "/api/capture":
                     result = state.capture()
-                elif parsed.path == "/api/detect":
-                    result = state.detect(payload)
                 elif parsed.path == "/api/detect-mixed":
                     result = state.detect_mixed(payload)
-                elif parsed.path == "/api/detect-geometry":
-                    result = state.detect_geometry(payload)
-                elif parsed.path == "/api/queue":
-                    result = state.start_queue(payload)
                 elif parsed.path == "/api/queue-mixed":
                     result = state.start_mixed_queue(payload)
                 elif parsed.path == "/api/stop":

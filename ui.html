@@ -39,36 +39,31 @@
     <p>Review-first ADB queue helper. It never presses <strong>Paint</strong>.</p>
   </header>
   <section class="toolbar">
-    <label>Workflow
-      <select id="workflowMode">
-        <option value="mono">Mono filtered</option>
-        <option value="mixed">Mixed eyedropper</option>
-      </select>
-    </label>
     <button id="capture" class="primary">1 - Capture</button>
     <button id="roi">Adjust region</button>
+    <select id="regionShape" aria-label="Region shape"><option value="polygon">Polygon</option><option value="rectangle">Rectangle</option></select>
+    <span id="regionTools" class="hidden"><button id="finishRegion">Finish region</button><button id="undoCorner">Undo corner</button><button id="cancelRegion">Cancel</button></span>
     <button id="sample">2 - Sample mini-square</button>
-    <button id="eyedropper" class="hidden">3 - Set eyedropper</button>
+    <button id="eyedropper">3 - Set eyedropper</button>
     <button id="detect">Detect again</button>
     <button id="queue" class="primary">Queue checked pixels</button>
     <button id="stop" class="stop">STOP</button>
     <label>Tolerance <input id="tolerance" type="number" min="0" max="40" value="5"></label>
     <label>Delay <input id="minDelay" type="number" min="0.01" max="5" step="0.01" value="0.01"> to <input id="maxDelay" type="number" min="0.01" max="5" step="0.01" value="0.08"> s</label>
-    <label id="groupOption" class="hidden"><input id="groupByColour" type="checkbox" checked> Group same colors</label>
-    <label id="geometryOption" class="hidden"><input id="geometryOnly" type="checkbox"> Dimensions-only eyedropper (ignore all colors)</label>
   </section>
   <main>
     <div class="viewer"><canvas id="screen"></canvas></div>
     <aside>
       <h2>Status</h2>
-      <div id="status">Choose a workflow, prepare the phone, then capture.</div>
+      <div id="status">Prepare the phone, choose your color profile, then capture.</div>
 
-      <section id="profilePanel" class="hidden">
+      <section id="profilePanel">
         <h2>Unlocked-color profile</h2>
         <div class="profile-row">
           <select id="profileSelect"></select>
           <input id="profileName" type="text" value="Default" aria-label="Profile name">
           <button id="saveProfile">Save</button>
+          <button id="deleteProfile">Delete</button><button id="undoDelete" class="hidden">Undo delete</button>
         </div>
         <div class="profile-row">
           <button id="allColours">All</button><button id="noColours">None</button>
@@ -81,13 +76,13 @@
 
       <h2>Review</h2>
       <ul class="legend">
-        <li>Gold rectangle: analysis region</li>
+        <li>Gold outline: analysis region</li>
         <li>Colored/green square: checked</li>
         <li>Red square: excluded</li>
         <li>Cyan cross: calibrated eyedropper</li>
       </ul>
       <p>Click a candidate square to include or exclude it.</p>
-      <p class="warning">Mixed mode performs three taps per pixel. A wrong unlocked-color profile can queue the previous color, so review the profile and preview carefully.</p>
+      <p class="warning">The eyedropper selects each color once, then queues all pixels in that color. A wrong unlocked-color profile can queue the previous color, so review the profile and preview carefully.</p>
     </aside>
   </main>
   <script>
@@ -107,10 +102,14 @@
     ];
     const PROFILE_KEY="pixelAssistColourProfilesV1";
     const canvas=document.querySelector("#screen"),ctx=canvas.getContext("2d"),statusBox=document.querySelector("#status");
-    const workflowMode=document.querySelector("#workflowMode"),profilePanel=document.querySelector("#profilePanel"),eyedropperButton=document.querySelector("#eyedropper"),groupOption=document.querySelector("#groupOption"),geometryOption=document.querySelector("#geometryOption"),geometryOnly=document.querySelector("#geometryOnly"),groupByColour=document.querySelector("#groupByColour");
+    const eyedropperButton=document.querySelector("#eyedropper");
     let phoneImage=null,imageVersion=0,roi=null,dragStart=null,samplePoint=null,eyedropperPoint=null;
     let markers=[],enabled=[],mode="none",queueState="idle",allColours=[...BASE_COLOURS],selectedColours=new Set(BASE_COLOURS),currentProfileName="Default";
     let profiles=loadProfiles();
+    let polygon=null,draftPoints=[],regionBackup=null,deletedProfile=null;
+    function endRegionEdit(){draftPoints=[];regionBackup=null;document.querySelector("#regionTools").classList.add("hidden");}
+    function polygonBounds(points){return [Math.min(...points.map(p=>p[0])),Math.min(...points.map(p=>p[1])),Math.max(...points.map(p=>p[0])),Math.max(...points.map(p=>p[1]))];}
+    function encodedPolygon(){return polygon?polygon.map(encodePoint):null;}
 
     function setStatus(message){statusBox.textContent=message;}
     function warn(message){setStatus(message);window.alert(message);}
@@ -119,48 +118,103 @@
     function normalizedRect(a,b){return[Math.min(a[0],b[0]),Math.min(a[1],b[1]),Math.max(a[0],b[0]),Math.max(a[1],b[1])];}
     function hexToRgb(hex){return[parseInt(hex.slice(1,3),16),parseInt(hex.slice(3,5),16),parseInt(hex.slice(5,7),16)];}
     function rgbCss(rgb){return`rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;}
-    function loadProfiles(){try{const parsed=JSON.parse(localStorage.getItem(PROFILE_KEY)||"{}"),normalized={};Object.entries(parsed).forEach(([name,value])=>{if(Array.isArray(value)){normalized[name]={colours:value};}else if(value&&typeof value==="object"){normalized[name]={colours:Array.isArray(value.colours)?value.colours:[],roi:value.roi||null,eyedropper:value.eyedropper||null};}});return Object.keys(normalized).length?normalized:{Default:{colours:[...BASE_COLOURS]}};}catch(_){return{Default:{colours:[...BASE_COLOURS]}};}}
+    function loadProfiles(){try{const parsed=JSON.parse(localStorage.getItem(PROFILE_KEY)||"{}"),normalized={};Object.entries(parsed).forEach(([name,value])=>{if(Array.isArray(value)){normalized[name]={colours:value};}else if(value&&typeof value==="object"){normalized[name]={colours:Array.isArray(value.colours)?value.colours:[],roi:value.roi||null,eyedropper:value.eyedropper||null,polygon:value.polygon||null};}});return Object.keys(normalized).length?normalized:{Default:{colours:[...BASE_COLOURS]}};}catch(_){return{Default:{colours:[...BASE_COLOURS]}};}}
     function persistProfiles(){localStorage.setItem(PROFILE_KEY,JSON.stringify(profiles));}
     function defaultRoi(){return phoneImage?[0,Math.round(phoneImage.naturalHeight*.15),phoneImage.naturalWidth,Math.round(phoneImage.naturalHeight*.575)]:null;}
     function decodeRoi(value){if(!phoneImage||!value)return null;return[Math.round(value.left*phoneImage.naturalWidth),Math.round(value.top*phoneImage.naturalHeight),Math.round(value.right*phoneImage.naturalWidth),Math.round(value.bottom*phoneImage.naturalHeight)];}
     function encodeRoi(value){if(!phoneImage||!value)return null;return{left:value[0]/phoneImage.naturalWidth,top:value[1]/phoneImage.naturalHeight,right:value[2]/phoneImage.naturalWidth,bottom:value[3]/phoneImage.naturalHeight};}
     function decodePoint(value){if(!phoneImage||!value)return null;return[Math.round(value.x*phoneImage.naturalWidth),Math.round(value.y*phoneImage.naturalHeight)];}
     function encodePoint(value){if(!phoneImage||!value)return null;return{x:value[0]/phoneImage.naturalWidth,y:value[1]/phoneImage.naturalHeight};}
-    function saveCurrentGeometry(){if(!currentProfileName||!profiles[currentProfileName])return;profiles[currentProfileName].roi=encodeRoi(roi);profiles[currentProfileName].eyedropper=encodePoint(eyedropperPoint);persistProfiles();}
-    function applyCurrentProfileGeometry(){if(!phoneImage)return;const profile=profiles[currentProfileName]||{};roi=decodeRoi(profile.roi)||defaultRoi();eyedropperPoint=decodePoint(profile.eyedropper);}
+    function saveCurrentGeometry(){if(!currentProfileName||!profiles[currentProfileName])return;profiles[currentProfileName].polygon=encodedPolygon();profiles[currentProfileName].roi=encodeRoi(roi);profiles[currentProfileName].eyedropper=encodePoint(eyedropperPoint);persistProfiles();}
+    function applyCurrentProfileGeometry(){if(!phoneImage)return;const profile=profiles[currentProfileName]||{};polygon=Array.isArray(profile.polygon)&&profile.polygon.length>=3?profile.polygon.map(decodePoint):null;roi=polygon?polygonBounds(polygon):decodeRoi(profile.roi)||defaultRoi();eyedropperPoint=decodePoint(profile.eyedropper);}
     function refreshProfileSelect(chosen){const select=document.querySelector("#profileSelect");select.innerHTML="";Object.keys(profiles).sort().forEach(name=>{const option=document.createElement("option");option.value=name;option.textContent=name;select.appendChild(option);});select.value=chosen&&profiles[chosen]?chosen:Object.keys(profiles)[0];loadProfile(select.value);}
-    function loadProfile(name){const profile=profiles[name]||{colours:[]},colours=profile.colours||[];currentProfileName=name;colours.forEach(c=>{if(!allColours.includes(c))allColours.push(c);});selectedColours=new Set(colours);document.querySelector("#profileName").value=name;if(phoneImage){applyCurrentProfileGeometry();markers=[];enabled=[];mode="sample";render();setStatus(`Loaded profile '${name}' with its saved region and eyedropper calibration.`);}renderPalette();}
+    function loadProfile(name){endRegionEdit();const profile=profiles[name]||{colours:[]},colours=profile.colours||[];currentProfileName=name;colours.forEach(c=>{if(!allColours.includes(c))allColours.push(c);});selectedColours=new Set(colours);document.querySelector("#profileName").value=name;if(phoneImage){applyCurrentProfileGeometry();markers=[];enabled=[];mode="sample";render();setStatus(`Loaded profile '${name}' with its saved region and eyedropper calibration.`);}renderPalette();}
     function renderPalette(){const palette=document.querySelector("#palette");palette.innerHTML="";allColours.forEach(hex=>{const chip=document.createElement("button");chip.className=`chip${selectedColours.has(hex)?" enabled":""}`;chip.style.background=hex;chip.title=`${hex} - click to ${selectedColours.has(hex)?"disable":"enable"}`;chip.onclick=()=>{selectedColours.has(hex)?selectedColours.delete(hex):selectedColours.add(hex);renderPalette();};palette.appendChild(chip);});}
-    function configureWorkflow(){const mixed=workflowMode.value==="mixed";profilePanel.classList.toggle("hidden",!mixed);eyedropperButton.classList.toggle("hidden",!mixed);groupOption.classList.toggle("hidden",!mixed);geometryOption.classList.toggle("hidden",!mixed);markers=[];enabled=[];if(phoneImage){if(mixed){applyCurrentProfileGeometry();}else{eyedropperPoint=null;}mode="sample";setStatus(mixed?"Mixed mode: the selected profile's region and eyedropper were restored. Click one mini-square.":"Mono mode: click one filtered mini-square.");render();}}
 
-    function configureGeometryOnly(){const active=geometryOnly.checked;if(active){groupByColour.checked=false;}groupByColour.disabled=active;setStatus(active?"Dimensions-only eyedropper enabled. No profile or palette will be consulted; every detected component will sample its own visible color.":"Profile color filtering restored.");}
 
-    function render(){if(!phoneImage)return;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(phoneImage,0,0);if(roi){ctx.strokeStyle="#ffd43b";ctx.lineWidth=4;ctx.strokeRect(roi[0],roi[1],roi[2]-roi[0],roi[3]-roi[1]);}markers.forEach((m,i)=>{const[left,top,right,bottom]=m.bounds,pad=3,width=right-left+1+pad*2,height=bottom-top+1+pad*2,x=left-pad,y=top-pad;const colour=enabled[i]?(m.rgb?rgbCss(m.rgb):"#28dc67"):"#ff4c59";ctx.strokeStyle="#050505";ctx.lineWidth=5;ctx.strokeRect(x,y,width,height);ctx.strokeStyle=colour;ctx.lineWidth=2;ctx.strokeRect(x,y,width,height);});if(eyedropperPoint){const[x,y]=eyedropperPoint;ctx.strokeStyle="#27d7ef";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(x-18,y);ctx.lineTo(x+18,y);ctx.moveTo(x,y-18);ctx.lineTo(x,y+18);ctx.stroke();ctx.strokeRect(x-10,y-10,20,20);}}
+    function render(){if(!phoneImage)return;ctx.clearRect(0,0,canvas.width,canvas.height);ctx.drawImage(phoneImage,0,0);if(roi){ctx.strokeStyle="#ffd43b";ctx.lineWidth=4;if(polygon){ctx.beginPath();polygon.forEach((p,i)=>i?ctx.lineTo(...p):ctx.moveTo(...p));ctx.closePath();ctx.stroke();}else{ctx.strokeRect(roi[0],roi[1],roi[2]-roi[0],roi[3]-roi[1]);}}if(mode==="polygon"&&draftPoints.length){ctx.strokeStyle="#ffd43b";ctx.lineWidth=3;ctx.beginPath();draftPoints.forEach((p,i)=>i?ctx.lineTo(...p):ctx.moveTo(...p));ctx.stroke();draftPoints.forEach(p=>{ctx.fillStyle="#ffd43b";ctx.fillRect(p[0]-4,p[1]-4,8,8);});}markers.forEach((m,i)=>{const[left,top,right,bottom]=m.bounds,pad=3,width=right-left+1+pad*2,height=bottom-top+1+pad*2,x=left-pad,y=top-pad;const colour=enabled[i]?(m.rgb?rgbCss(m.rgb):"#28dc67"):"#ff4c59";ctx.strokeStyle="#050505";ctx.lineWidth=5;ctx.strokeRect(x,y,width,height);ctx.strokeStyle=colour;ctx.lineWidth=2;ctx.strokeRect(x,y,width,height);});if(eyedropperPoint){const[x,y]=eyedropperPoint;ctx.strokeStyle="#27d7ef";ctx.lineWidth=5;ctx.beginPath();ctx.moveTo(x-18,y);ctx.lineTo(x+18,y);ctx.moveTo(x,y-18);ctx.lineTo(x,y+18);ctx.stroke();ctx.strokeRect(x-10,y-10,20,20);}}
 
-    async function capture(){try{setStatus("Capturing phone screen...");const data=await api("/api/capture",{});imageVersion=data.version;const image=new Image();image.onload=()=>{phoneImage=image;canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;applyCurrentProfileGeometry();markers=[];enabled=[];samplePoint=null;if(workflowMode.value!=="mixed")eyedropperPoint=null;mode="sample";render();setStatus(workflowMode.value==="mixed"?"Captured in Mixed mode. The profile's saved region and eyedropper were restored; click one mini-square.":"Captured in Mono mode. Click inside one filtered mini-square.");};image.src=`/api/screen?token=${encodeURIComponent(TOKEN)}&v=${imageVersion}`;}catch(error){setStatus(`Capture failed: ${error.message}`);}}
-    async function detect(){if(!roi||!samplePoint){setStatus("Capture and sample one mini-square first.");return;}try{setStatus("Detecting markers...");const common={roi,sample:samplePoint,tolerance:Number(document.querySelector("#tolerance").value)};let data;if(workflowMode.value==="mixed"){const geometry=geometryOnly.checked;if(geometry){data=await api("/api/detect-geometry",{roi:common.roi,sample:common.sample});markers=data.markers;setStatus(`Found ${markers.length} dimension-matched candidates across ${data.colourCount} visible RGB values. No palette or profile was used.\nSample size: ${data.sampleSize[0]}x${data.sampleSize[1]}.\nReview every candidate and calibrate the eyedropper.`);}else{const colours=[...selectedColours].map(hexToRgb);if(!colours.length){warn("Enable at least one color in the current account profile.");return;}data=await api("/api/detect-mixed",{...common,colours});markers=data.markers;setStatus(`Found ${markers.length} mixed-color candidates across ${Object.keys(data.colourCounts).length} enabled colors.\nSample size: ${data.sampleSize[0]}x${data.sampleSize[1]}.\nReview them, then calibrate the eyedropper button.`);}}else{data=await api("/api/detect",common);markers=data.markers.map(m=>({...m,rgb:data.rgb}));setStatus(`Found ${markers.length} mono candidates for RGB (${data.rgb.join(", ")}).\nSample size: ${data.sampleSize[0]}x${data.sampleSize[1]}. Review every square.`);}enabled=markers.map(()=>true);mode="review";render();}catch(error){setStatus(`Detection failed: ${error.message}`);}}
+    async function capture(){try{setStatus("Capturing phone screen...");const data=await api("/api/capture",{});imageVersion=data.version;const image=new Image();image.onload=()=>{endRegionEdit();phoneImage=image;canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;applyCurrentProfileGeometry();markers=[];enabled=[];samplePoint=null;mode="sample";render();setStatus("Captured. The profile's saved region and eyedropper were restored; click one mini-square.");};image.src=`/api/screen?token=${encodeURIComponent(TOKEN)}&v=${imageVersion}`;}catch(error){setStatus(`Capture failed: ${error.message}`);}}
+    async function detect(){
+      if(!roi||!samplePoint){setStatus("Capture and sample one mini-square first.");return;}
+      try{
+        const colours=[...selectedColours].map(hexToRgb);
+        if(!colours.length){warn("Enable at least one color in the current account profile.");return;}
+        setStatus("Detecting markers...");
+        const data=await api("/api/detect-mixed",{roi,polygon,sample:samplePoint,tolerance:Number(document.querySelector("#tolerance").value),colours});
+        markers=data.markers;
+        setStatus(`Found ${markers.length} candidates across ${Object.keys(data.colourCounts).length} enabled colors.\nSample size: ${data.sampleSize[0]}x${data.sampleSize[1]}.\nReview them, then calibrate the eyedropper button.`);
+        enabled=markers.map(()=>true);mode="review";render();
+      }catch(error){setStatus(`Detection failed: ${error.message}`);}
+    }
 
-    canvas.addEventListener("pointerdown",event=>{const p=eventPoint(event);if(mode==="roi"){dragStart=p;canvas.setPointerCapture(event.pointerId);}else if(mode==="sample"){samplePoint=p;detect();}else if(mode==="eyedropper"){eyedropperPoint=p;saveCurrentGeometry();mode="review";render();setStatus(`Eyedropper calibrated at (${p[0]}, ${p[1]}) and saved to '${currentProfileName}'.`);}else if(mode==="review"&&markers.length){let best=-1,distance=Infinity;markers.forEach((m,i)=>{const dx=m.center[0]-p[0],dy=m.center[1]-p[1],d=dx*dx+dy*dy;if(d<distance){distance=d;best=i;}});if(best>=0&&distance<900){enabled[best]=!enabled[best];render();setStatus(`${enabled.filter(Boolean).length} of ${markers.length} candidates checked.`);}}});
-    canvas.addEventListener("pointermove",event=>{if(mode==="roi"&&dragStart){roi=normalizedRect(dragStart,eventPoint(event));render();}});
-    canvas.addEventListener("pointerup",event=>{if(mode==="roi"&&dragStart){roi=normalizedRect(dragStart,eventPoint(event));dragStart=null;canvas.releasePointerCapture(event.pointerId);if(roi[2]-roi[0]<20||roi[3]-roi[1]<20){roi=null;setStatus("Region too small; drag a larger canvas-only rectangle.");}else{saveCurrentGeometry();mode="sample";setStatus(`Region selected and saved to '${currentProfileName}'. Now click inside one mini-square.`);}render();}});
+    canvas.addEventListener("pointerdown",event=>{const p=eventPoint(event);if(mode==="polygon"){draftPoints.push(p);render();setStatus(`${draftPoints.length} corners. Click around the usable canvas, then Finish region.`);}else if(mode==="roi"){dragStart=p;canvas.setPointerCapture(event.pointerId);}else if(mode==="sample"){samplePoint=p;detect();}else if(mode==="eyedropper"){eyedropperPoint=p;saveCurrentGeometry();mode="review";render();setStatus(`Eyedropper calibrated at (${p[0]}, ${p[1]}) and saved to '${currentProfileName}'.`);}else if(mode==="review"&&markers.length){let best=-1,distance=Infinity;markers.forEach((m,i)=>{const dx=m.center[0]-p[0],dy=m.center[1]-p[1],d=dx*dx+dy*dy;if(d<distance){distance=d;best=i;}});if(best>=0&&distance<900){enabled[best]=!enabled[best];render();setStatus(`${enabled.filter(Boolean).length} of ${markers.length} candidates checked.`);}}});
+    canvas.addEventListener("pointermove",event=>{if(mode==="roi"&&dragStart){polygon=null;roi=normalizedRect(dragStart,eventPoint(event));render();}});
+    canvas.addEventListener("pointerup",event=>{if(mode==="roi"&&dragStart){roi=normalizedRect(dragStart,eventPoint(event));dragStart=null;canvas.releasePointerCapture(event.pointerId);if(roi[2]-roi[0]<20||roi[3]-roi[1]<20){roi=null;setStatus("Region too small; drag a larger canvas-only rectangle.");}else{saveCurrentGeometry();endRegionEdit();mode="sample";setStatus(`Region selected and saved to '${currentProfileName}'. Now click inside one mini-square.`);}render();}});
 
     document.querySelector("#capture").onclick=capture;
-    document.querySelector("#roi").onclick=()=>{if(!phoneImage){setStatus("Capture first.");return;}mode="roi";markers=[];enabled=[];setStatus("Drag a replacement canvas region. Sampling starts when released.");render();};
+    document.querySelector("#roi").onclick=()=>{
+      if(!phoneImage){setStatus("Capture first.");return;}
+      regionBackup={roi:roi&&[...roi],polygon:polygon&&polygon.map(p=>[...p])};
+      draftPoints=[];markers=[];enabled=[];samplePoint=null;
+      mode=document.querySelector("#regionShape").value==="polygon"?"polygon":"roi";
+      document.querySelector("#regionTools").classList.remove("hidden");
+      setStatus(mode==="polygon"?"Click corners around the usable canvas in order, making notches around buttons. Then Finish region.":"Drag a rectangle; it saves when released.");
+      render();
+    };
+    document.querySelector("#undoCorner").onclick=()=>{draftPoints.pop();render();};
+    document.querySelector("#cancelRegion").onclick=()=>{
+      if(regionBackup){roi=regionBackup.roi;polygon=regionBackup.polygon;}
+      endRegionEdit();mode="sample";render();setStatus("Region adjustment cancelled. Click a mini-square.");
+    };
+    document.querySelector("#finishRegion").onclick=()=>{
+      if(mode!=="polygon")return;
+      if(draftPoints.length<3){setStatus("Choose at least three corners.");return;}
+      const bounds=polygonBounds(draftPoints);
+      const area=Math.abs(draftPoints.reduce((a,p,i)=>{const q=draftPoints[(i+1)%draftPoints.length];return a+p[0]*q[1]-q[0]*p[1];},0))/2;
+      if(area<400){setStatus("Region too small. Choose a larger outline.");return;}
+      polygon=draftPoints.map(p=>[...p]);roi=bounds;saveCurrentGeometry();endRegionEdit();mode="sample";render();
+      setStatus("Region saved to this profile. Click inside one mini-square.");
+    };
     document.querySelector("#sample").onclick=()=>{if(!roi){setStatus("Capture or draw a region first.");return;}mode="sample";setStatus("Click the solid interior of one visible mini-square.");};
-    eyedropperButton.onclick=()=>{if(workflowMode.value!=="mixed"){return;}if(!phoneImage){setStatus("Capture first.");return;}mode="eyedropper";setStatus("Click the center of the game's eyedropper button in the phone screenshot.");};
+    eyedropperButton.onclick=()=>{if(!phoneImage){setStatus("Capture first.");return;}mode="eyedropper";setStatus("Click the center of the game's eyedropper button in the phone screenshot.");};
     document.querySelector("#detect").onclick=detect;
-    document.querySelector("#queue").onclick=async()=>{const indices=enabled.map((yes,i)=>yes?i:-1).filter(i=>i>=0);if(!indices.length){warn("No checked candidates are selected.");return;}const payload={indices,minDelay:Number(document.querySelector("#minDelay").value),maxDelay:Number(document.querySelector("#maxDelay").value)};try{if(workflowMode.value==="mixed"){if(!eyedropperPoint){warn("Set the eyedropper button location before starting a mixed queue.");return;}const geometry=geometryOnly.checked;const grouped=geometry?false:groupByColour.checked;await api("/api/queue-mixed",{...payload,eyedropper:eyedropperPoint,groupByColour:grouped});setStatus(grouped?`Grouped mixed queue started for ${indices.length} pixels.`:geometry?`Dimensions-only per-pixel queue started for ${indices.length} pixels. Each pixel will use the eyedropper.`:`Per-pixel mixed queue started for ${indices.length} pixels using the calibrated eyedropper button.`);}else{await api("/api/queue",payload);setStatus(`Mono queue started for ${indices.length} pixels.`);}}catch(error){warn(`Could not start queue: ${error.message}`);}};
+    document.querySelector("#queue").onclick=async()=>{
+      const indices=enabled.map((yes,i)=>yes?i:-1).filter(i=>i>=0);
+      if(!indices.length){warn("No checked candidates are selected.");return;}
+      if(!eyedropperPoint){warn("Set the eyedropper button location before starting a queue.");return;}
+      try{
+        await api("/api/queue-mixed",{indices,eyedropper:eyedropperPoint,minDelay:Number(document.querySelector("#minDelay").value),maxDelay:Number(document.querySelector("#maxDelay").value)});
+        setStatus(`Grouped queue started for ${indices.length} pixels.`);
+      }catch(error){warn(`Could not start queue: ${error.message}`);}
+    };
     document.querySelector("#stop").onclick=async()=>{try{await api("/api/stop",{});setStatus("Stop requested...");}catch(error){setStatus(`Stop failed: ${error.message}`);}};
-    workflowMode.onchange=configureWorkflow;
-    geometryOnly.onchange=configureGeometryOnly;
     document.querySelector("#profileSelect").onchange=event=>loadProfile(event.target.value);
-    document.querySelector("#saveProfile").onclick=()=>{const name=document.querySelector("#profileName").value.trim()||"Default";profiles[name]={colours:[...selectedColours],roi:encodeRoi(roi),eyedropper:encodePoint(eyedropperPoint)};currentProfileName=name;persistProfiles();refreshProfileSelect(name);setStatus(`Saved colors, region, and eyedropper for profile '${name}'.`);};
+    document.querySelector("#saveProfile").onclick=()=>{const name=document.querySelector("#profileName").value.trim()||"Default";profiles[name]={colours:[...selectedColours],roi:phoneImage?encodeRoi(roi):profiles[name]?.roi||null,polygon:phoneImage?encodedPolygon():profiles[name]?.polygon||null,eyedropper:phoneImage?encodePoint(eyedropperPoint):profiles[name]?.eyedropper||null};currentProfileName=name;persistProfiles();refreshProfileSelect(name);setStatus(`Saved colors, region, and eyedropper for profile '${name}'.`);};
+    document.querySelector("#deleteProfile").onclick=()=>{
+      const name=currentProfileName;
+      deletedProfile={name,value:profiles[name]};
+      delete profiles[name];
+      let fallback=null;
+      if(!Object.keys(profiles).length){fallback={colours:[...BASE_COLOURS]};profiles.Default=fallback;}
+      deletedProfile.fallback=fallback;
+      persistProfiles();refreshProfileSelect();
+      document.querySelector("#undoDelete").classList.remove("hidden");
+      setStatus(`Deleted profile '${name}'. Undo delete is available until you reload.`);
+    };
+    document.querySelector("#undoDelete").onclick=()=>{
+      if(!deletedProfile)return;
+      const {name,value,fallback}=deletedProfile;
+      if(fallback&&profiles.Default===fallback)delete profiles.Default;
+      profiles[name]=value;persistProfiles();refreshProfileSelect(name);deletedProfile=null;
+      document.querySelector("#undoDelete").classList.add("hidden");setStatus(`Restored profile '${name}'.`);
+    };
     document.querySelector("#allColours").onclick=()=>{selectedColours=new Set(allColours);renderPalette();};
     document.querySelector("#noColours").onclick=()=>{selectedColours.clear();renderPalette();};
     document.querySelector("#addColour").onclick=()=>{const hex=document.querySelector("#customColour").value.toLowerCase();if(!allColours.includes(hex))allColours.push(hex);selectedColours.add(hex);renderPalette();};
-    setInterval(async()=>{try{const s=await api("/api/status");queueState=s.state;if(s.state!=="idle")setStatus(`${s.message}\n${s.completed}/${s.total} pixels completed. Paint was not pressed.`);}catch(_){}},500);
+    setInterval(async()=>{try{const s=await api("/api/status");if(s.state==="running"||queueState!==s.state)setStatus(`${s.message}\n${s.completed}/${s.total} pixels completed. Paint was not pressed.`);queueState=s.state;}catch(_){}},500);
 
-    refreshProfileSelect("Default");configureWorkflow();configureGeometryOnly();
+    refreshProfileSelect("Default");
   </script>
 </body>
 </html>

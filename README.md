@@ -1,6 +1,6 @@
 # Pixel Mobile Assist
 
-Pixel Mobile Assist is a review-first Android helper for a filtered pixel-art
+Pixel Mobile Assist is a review-first Android helper for a pixel-art
 template. It opens a local dashboard in your normal browser, detects the small
 squares that mark incorrect pixels, and queues reviewed taps through ADB.
 
@@ -49,81 +49,44 @@ Pixel Mobile Assist searches common scrcpy folders under Downloads for
 run.cmd --adb "C:\path\to\scrcpy\adb.exe"
 ```
 
-## Mono filtered workflow
-
-1. On the phone, zoom to the area you want to work on.
-2. Select an **unlocked** palette colour.
-3. Enable the template filter so only that target colour is shown.
-4. Do not pan or zoom while Pixel Mobile Assist is reviewing or queueing.
-5. Click **Capture**. A fixed gold canvas region appears automatically below the
-   floating top controls and extends downward toward the paint/palette panel.
-   Use **Adjust region** only when you want to replace the automatic rectangle;
-   releasing the new rectangle immediately enters sampling mode.
-6. Pixel Mobile Assist immediately enters sampling mode. Click inside one small
-   wrong-pixel square.
-7. Review the outlined candidate squares:
-   - Green candidates will be tapped.
-   - Click a candidate to turn it red and exclude it.
-8. Click **Queue checked pixels**. The reviewed queue starts immediately without
-   a confirmation pop-up or pixel-count limit.
-9. Watch the phone. Press **STOP** if anything looks wrong.
-10. When queueing ends, inspect all pending pixels and press **Paint yourself**
-    only if the selection is correct.
-
-After painting, pan or zoom as needed and begin again with a new capture.
-
-## Mixed-color eyedropper workflow
+## Grouped-color eyedropper workflow
 
 Use this mode for a reviewed region containing many target colors:
 
 1. On the phone, turn off the template's single-color filter so markers for all
    target colors are visible.
-2. In Pixel Mobile Assist, choose **Mixed eyedropper**.
+2. Open Pixel Mobile Assist. Color grouping is always enabled.
 3. In **Unlocked-color profile**, disable every color the current account does
    not own. Save a named profile and reuse it for that account. The profile is
    stored only in the PC browser's local storage. Each profile also remembers
    its most recently adjusted region and eyedropper location as normalized
    screen coordinates.
-4. Click **Capture** and optionally use **Adjust region**.
+4. Click **Capture** to restore the profile's saved region. To change it, choose
+   **Polygon**, click **Adjust region**, and click corners around the usable canvas
+   in order. Add inward corners to avoid floating buttons, then click **Finish region**.
+   **Undo corner** removes the last point; **Cancel** restores the previous region.
+   Choose **Rectangle** to use the original drag selection. The gold outline stays
+   visible, and only markers fully inside it are included.
 5. Click one mini-square of any enabled/unlocked color. This teaches Pixel
    Mobile Assist the marker dimensions and detects marker-sized components for
    every enabled profile color.
 6. Click **Set eyedropper**, then click the center of the game's eyedropper icon
    in the captured phone screenshot. A cyan cross shows the calibrated point.
 7. Review all colored marker-sized squares and turn false detections red.
-8. Leave **Group same colors** enabled for the faster workflow. Pixel Mobile Assist
+8. Pixel Mobile Assist
    samples one representative marker, places the complete matched color group,
    then switches to the next color. Before each later color, it refreshes the
    phone screen and relocates the calibrated eyedropper if the toolbar shifted.
    This uses approximately `pixels + 2 x colors` interactions instead of
    `3 x pixels` interactions.
-9. Click **Queue checked pixels**. In grouped mode, each color uses:
+9. Click **Queue checked pixels**. Each color uses:
 
    ```text
    eyedropper -> representative marker to sample -> every marker in that color
    ```
 
-   Turn grouping off to use the slower eyedropper/sample/place sequence for
-   every individual pixel.
 10. Watch the phone and use **STOP** immediately if the picker or viewport does
     not behave as expected.
-
-### Dimensions-only eyedropper
-
-Enable **Dimensions-only eyedropper (ignore all colors)** inside Mixed mode when
-you want every sampled-size marker processed independently. It does not consult
-the selected profile, the built-in palette, or any list of expected colors.
-Instead, it discovers all visible solid-color connected components and retains
-only components whose dimensions, area, and aspect ratio match the sampled
-mini-square. Grouping is disabled and each candidate uses:
-
-```text
-eyedropper -> candidate marker to sample -> candidate marker to place
-```
-
-Review the preview carefully. If adjacent same-color marker interiors touch in
-the screenshot, they form one connected shape and can be rejected for having
-the wrong dimensions.
 
 The built-in profile catalog contains the complete 63-color game palette. Use
 **Add color** if the game introduces another color. A locked color must not
@@ -131,6 +94,11 @@ remain enabled: if the game rejects the picker sample, the previous color could
 otherwise be queued.
 
 ## Detection tuning
+
+To remove an account profile, select it and click **Delete**. **Undo delete**
+restores the most recently deleted profile until the dashboard is reloaded.
+Deleting the last profile creates a fresh Default profile. Existing rectangular
+profiles remain compatible; polygon outlines are saved per profile as well.
 
 - **Colour tolerance** defaults to 5. Increase it slightly if browser rendering
   creates minor colour variations. Lower it if unrelated pixels are detected.
@@ -147,9 +115,8 @@ otherwise be queued.
 ## Safety behavior
 
 - Valid reviewed queues start immediately with no pixel-count limit.
-- Profile-filtered mixed mode only detects colors enabled in the selected
-  account profile. Dimensions-only mode deliberately ignores that profile.
-- Mixed mode restores the selected profile's saved eyedropper calibration.
+- Detection only includes colors enabled in the selected account profile.
+- The selected profile restores its saved region and eyedropper calibration.
 - Random delay between taps.
 - Emergency stop button.
 - Every detection is shown before interaction.

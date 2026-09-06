@@ -9,50 +9,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from detector import (
     connected_components,
-    connected_colour_components,
     find_coloured_markers,
-    find_geometry_markers,
     find_markers,
     track_template_point,
 )
 
 
 class DetectorTests(unittest.TestCase):
-    def test_dimensions_only_detection_has_no_palette_dependency(self):
-        image = Image.new("RGB", (90, 50), (240, 240, 240))
-        draw = ImageDraw.Draw(image)
-        unusual_first = (1, 2, 3)
-        unusual_second = (117, 43, 209)
-        draw.rectangle((5, 5, 8, 8), fill=unusual_first)
-        draw.rectangle((25, 5, 28, 8), fill=unusual_second)
-        draw.rectangle((45, 5, 49, 9), fill=(77, 88, 99))
-
-        sample, markers = find_geometry_markers(image, (6, 6))
-
-        self.assertEqual((4, 4), (sample.width, sample.height))
-        self.assertEqual(
-            [((6, 6), unusual_first), ((26, 6), unusual_second)],
-            [(item.center, item.rgb) for item in markers],
-        )
-
-    def test_all_colour_components_keep_touching_different_colours_separate(self):
-        image = Image.new("RGB", (12, 8), "white")
-        draw = ImageDraw.Draw(image)
-        draw.rectangle((2, 2, 4, 4), fill=(10, 20, 30))
-        draw.rectangle((5, 2, 7, 4), fill=(40, 50, 60))
-
-        components = connected_colour_components(image)
-        small = sorted(
-            (item.component.center, item.rgb)
-            for item in components
-            if item.component.area == 9
-        )
-
-        self.assertEqual(
-            [((3, 3), (10, 20, 30)), ((6, 3), (40, 50, 60))],
-            small,
-        )
-
     def test_tracks_a_calibrated_icon_that_moved_in_the_toolbar(self):
         reference = Image.new("RGB", (220, 120), "white")
         current = Image.new("RGB", (220, 120), "white")

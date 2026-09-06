@@ -129,70 +129,6 @@ def connected_components(mask: np.ndarray) -> list[Component]:
     return [Component(*values) for values in aggregates.values()]
 
 
-def connected_colour_components(image: Image.Image) -> list[ColouredComponent]:
-    """Find all exact-colour 4-connected components in one image pass.
-
-    Unlike ``find_coloured_markers``, this does not receive or consult a palette.
-    Runs are joined only when their visible RGB values are identical.
-    """
-    pixels = np.asarray(image.convert("RGB"), dtype=np.uint8)
-    runs: list[tuple[int, int, int, int, int]] = []
-    previous: list[tuple[int, int, int, int, int]] = []
-    sets = _DisjointSet()
-
-    for y, row in enumerate(pixels):
-        boundaries = np.flatnonzero(np.any(row[1:] != row[:-1], axis=1)) + 1
-        starts = np.concatenate(([0], boundaries))
-        ends = np.concatenate((boundaries - 1, [image.width - 1]))
-        current: list[tuple[int, int, int, int, int]] = []
-        previous_index = 0
-
-        for start_value, end_value in zip(starts.tolist(), ends.tolist()):
-            start = int(start_value)
-            end = int(end_value)
-            red, green, blue = (int(channel) for channel in row[start])
-            colour_code = (red << 16) | (green << 8) | blue
-            set_index = sets.add()
-            run = (y, start, end, colour_code, set_index)
-            current.append(run)
-            runs.append(run)
-
-            while previous_index < len(previous) and previous[previous_index][2] < start:
-                previous_index += 1
-            candidate = previous_index
-            while candidate < len(previous) and previous[candidate][1] <= end:
-                if previous[candidate][3] == colour_code:
-                    sets.union(set_index, previous[candidate][4])
-                candidate += 1
-        previous = current
-
-    aggregates: dict[int, list[int]] = {}
-    colours: dict[int, int] = {}
-    for y, start, end, colour_code, set_index in runs:
-        root = sets.find(set_index)
-        colours[root] = colour_code
-        if root not in aggregates:
-            aggregates[root] = [start, y, end, y, end - start + 1]
-        else:
-            item = aggregates[root]
-            item[0] = min(item[0], start)
-            item[1] = min(item[1], y)
-            item[2] = max(item[2], end)
-            item[3] = max(item[3], y)
-            item[4] += end - start + 1
-
-    result: list[ColouredComponent] = []
-    for root, values in aggregates.items():
-        colour_code = colours[root]
-        rgb = (
-            (colour_code >> 16) & 255,
-            (colour_code >> 8) & 255,
-            colour_code & 255,
-        )
-        result.append(ColouredComponent(Component(*values), rgb))
-    return result
-
-
 def _marker_geometry_limits(
     sample: Component, size_flex: float
 ) -> tuple[int, int, int, int, int, int]:
@@ -216,65 +152,6 @@ def _matches_marker_geometry(
         and max(component.width, component.height)
         <= min(component.width, component.height) * MAX_MARKER_ASPECT_RATIO
     )
-
-
-def find_geometry_markers(
-    image: Image.Image,
-    sample_point: tuple[int, int],
-    size_flex: float = DEFAULT_MARKER_SIZE_FLEX,
-    max_sample_dimension: int | None = None,
-    nearby_search_radius: int = 0,
-) -> tuple[Component, list[ColouredComponent]]:
-    """Find marker-sized components without any palette knowledge."""
-    x, y = sample_point
-    if not (0 <= x < image.width and 0 <= y < image.height):
-        raise ValueError("sample point is outside the selected canvas region")
-
-    coloured_components = connected_colour_components(image)
-    sampled_rgb = tuple(int(channel) for channel in np.asarray(image.convert("RGB"))[y, x])
-    sample_item = next(
-        (
-            item
-            for item in coloured_components
-            if item.rgb == sampled_rgb and item.component.contains(x, y)
-        ),
-        None,
-    )
-    if sample_item is None:
-        raise ValueError("the sampled pixel did not form a detectable marker")
-    sample = sample_item.component
-
-    if (
-        max_sample_dimension is not None
-        and (sample.width > max_sample_dimension or sample.height > max_sample_dimension)
-    ):
-        compact = [
-            item.component
-            for item in coloured_components
-            if 4 <= item.component.area
-            and item.component.width <= max_sample_dimension
-            and item.component.height <= max_sample_dimension
-            and max(item.component.width, item.component.height)
-            <= min(item.component.width, item.component.height) * MAX_MARKER_ASPECT_RATIO
-        ]
-
-        def distance_to_bounds(component: Component) -> float:
-            dx = max(component.left - x, 0, x - component.right)
-            dy = max(component.top - y, 0, y - component.bottom)
-            return (dx * dx + dy * dy) ** 0.5
-
-        nearest = min(compact, key=distance_to_bounds, default=None)
-        if nearest is not None and distance_to_bounds(nearest) <= nearby_search_radius:
-            sample = nearest
-
-    limits = _marker_geometry_limits(sample, size_flex)
-    markers = [
-        item
-        for item in coloured_components
-        if _matches_marker_geometry(item.component, limits)
-    ]
-    markers.sort(key=lambda item: (item.component.top, item.component.left))
-    return sample, markers
 
 
 def find_markers(
