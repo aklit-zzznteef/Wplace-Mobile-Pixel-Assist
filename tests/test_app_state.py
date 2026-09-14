@@ -1,6 +1,7 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from PIL import Image
 
@@ -28,6 +29,39 @@ class FakeAdb:
         self.taps.append((x, y))
 
 class AppStateTests(unittest.TestCase):
+    def test_timing_separates_commands_and_waits(self):
+        clock = [0.0]
+        class TimedAdb(FakeAdb):
+            def tap(self, x, y):
+                clock[0] += 0.3
+            def press(self, x, y):
+                clock[0] += 0.4
+        state = AppState(TimedAdb(Image.new("RGB", (100, 100))))
+        def wait(delay):
+            clock[0] += delay
+            return False
+        with patch("pixel_assist.time.perf_counter", side_effect=lambda: clock[0]), patch.object(state.stop_event, "wait", side_effect=wait), patch("builtins.print"):
+            state._mixed_grouped_queue_worker([((20, 20), (0, 0, 0)), ((30, 30), (0, 0, 0))], (10, 90), state.adb.image, 0.05, 0.05)
+        t = state.status()["timing"]
+        self.assertAlmostEqual(1.45, t["elapsedSeconds"])
+        self.assertAlmostEqual(300, t["buckets"]["placement"]["averageMs"])
+        self.assertEqual(2, t["buckets"]["placement"]["count"])
+        self.assertEqual(3, t["buckets"]["delay"]["count"])
+        self.assertAlmostEqual(2 / 1.45, t["pixelsPerSecond"])
+
+    def test_timing_reports_failed_and_stopped_queues(self):
+        state = AppState(FakeAdb(Image.new("RGB", (100, 100))))
+        tasks = [((20, 20), (0, 0, 0))]
+        with patch.object(state.adb, "press", side_effect=RuntimeError("disconnected")), patch("builtins.print"):
+            state._mixed_grouped_queue_worker(tasks, (10, 90), state.adb.image, 0.01, 0.01)
+        self.assertEqual("error", state.status()["state"])
+        self.assertEqual(1, state.status()["timing"]["buckets"]["eyedropper"]["failures"])
+        state.stop_event.set()
+        with patch("builtins.print"):
+            state._mixed_grouped_queue_worker(tasks, (10, 90), state.adb.image, 0.01, 0.01)
+        self.assertEqual("stopped", state.status()["state"])
+        self.assertEqual({}, state.status()["timing"]["buckets"])
+
     def test_concave_region_excludes_notch_and_boundary_markers(self):
         from PIL import ImageDraw
         image = Image.new("RGB", (200, 200), "white")

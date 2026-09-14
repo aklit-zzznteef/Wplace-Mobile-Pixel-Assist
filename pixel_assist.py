@@ -352,6 +352,43 @@ class AppState:
         maximum: float,
     ) -> None:
         """Pick once per matched colour, then place the whole colour group."""
+        started = time.perf_counter()
+        measurements: dict[str, dict[str, float | int]] = {}
+        requested_wait = 0.0
+
+        def timed(category, action, *args, **kwargs):
+            before = time.perf_counter()
+            failed = False
+            try:
+                return action(*args, **kwargs)
+            except Exception:
+                failed = True
+                raise
+            finally:
+                duration = time.perf_counter() - before
+                item = measurements.setdefault(category, {"count": 0, "seconds": 0.0, "maxMs": 0.0, "failures": 0})
+                item["count"] += 1
+                item["seconds"] += duration
+                item["maxMs"] = max(item["maxMs"], duration * 1000)
+                item["failures"] += int(failed)
+
+        def report(state, completed, total, message):
+            elapsed = time.perf_counter() - started
+            buckets = {
+                name: {**item, "averageMs": item["seconds"] * 1000 / item["count"]}
+                for name, item in measurements.items()
+            }
+            metrics = {
+                "elapsedSeconds": elapsed,
+                "pixelsPerSecond": completed / elapsed if elapsed else 0,
+                "requestedWaitSeconds": requested_wait,
+                "otherSeconds": max(0, elapsed - sum(item["seconds"] for item in measurements.values())),
+                "buckets": buckets,
+            }
+            self._set_status(state, completed, total, message, metrics)
+            if state != "running":
+                print("Queue timing: " + json.dumps({"state": state, "completed": completed, **metrics}), flush=True)
+
         groups: dict[tuple[int, int, int], list[tuple[int, int]]] = {}
         for center, rgb in tasks:
             groups.setdefault(rgb, []).append(center)
@@ -360,35 +397,38 @@ class AppState:
         live_eyedropper = eyedropper
 
         def wait_between_actions() -> bool:
-            return self.stop_event.wait(random.uniform(minimum, maximum))
+            nonlocal requested_wait
+            delay = random.uniform(minimum, maximum)
+            requested_wait += delay
+            return timed("delay", self.stop_event.wait, delay)
 
         try:
             for group_number, (rgb, centers) in enumerate(ordered_groups, start=1):
                 if self.stop_event.is_set():
-                    self._set_status("stopped", completed, len(tasks), "Stopped; Paint was not pressed")
+                    report("stopped", completed, len(tasks), "Stopped; Paint was not pressed")
                     return
                 representative = centers[0]
                 if group_number > 1:
-                    current_image = self.adb.screenshot()
-                    live_eyedropper, _ = track_template_point(
+                    current_image = timed("screenshot", self.adb.screenshot)
+                    live_eyedropper, _ = timed("tracking", track_template_point,
                         reference_image,
                         current_image,
                         eyedropper,
                         search_center=live_eyedropper,
                     )
-                self.adb.press(*live_eyedropper)
+                timed("eyedropper", self.adb.press, *live_eyedropper)
                 if wait_between_actions():
-                    self._set_status("stopped", completed, len(tasks), "Stopped after eyedropper activation")
+                    report("stopped", completed, len(tasks), "Stopped after eyedropper activation")
                     return
-                self.adb.tap(*representative)
+                timed("sample", self.adb.tap, *representative)
                 if wait_between_actions():
-                    self._set_status("stopped", completed, len(tasks), "Stopped after group color sample")
+                    report("stopped", completed, len(tasks), "Stopped after group color sample")
                     return
 
                 for center in centers:
-                    self.adb.tap(*center)
+                    timed("placement", self.adb.tap, *center)
                     completed += 1
-                    self._set_status(
+                    report(
                         "running",
                         completed,
                         len(tasks),
@@ -396,9 +436,9 @@ class AppState:
                         f"pixel {completed}/{len(tasks)}",
                     )
                     if completed < len(tasks) and wait_between_actions():
-                        self._set_status("stopped", completed, len(tasks), "Stopped; Paint was not pressed")
+                        report("stopped", completed, len(tasks), "Stopped; Paint was not pressed")
                         return
-            self._set_status(
+            report(
                 "complete",
                 completed,
                 len(tasks),
@@ -406,15 +446,16 @@ class AppState:
                 "Review the phone and press Paint yourself if correct.",
             )
         except Exception as exc:
-            self._set_status("error", completed, len(tasks), f"ADB failed: {exc}")
+            report("error", completed, len(tasks), f"ADB failed: {exc}")
 
-    def _set_status(self, state: str, completed: int, total: int, message: str) -> None:
+    def _set_status(self, state: str, completed: int, total: int, message: str, timing: dict[str, Any] | None = None) -> None:
         with self.lock:
             self.queue_status = {
                 "state": state,
                 "completed": completed,
                 "total": total,
                 "message": message,
+                "timing": timing,
             }
 
     def status(self) -> dict[str, Any]:

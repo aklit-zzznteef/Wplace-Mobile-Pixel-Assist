@@ -127,6 +127,27 @@ path. Saved browser profiles stay in browser local storage and are not committed
 
 ## Development
 
+### Measuring queue speed
+
+The dashboard's **Queue timing** panel measures each normal queue without changing
+its tap sequence or delay settings. Start with 30–50 reviewed pixels in one color,
+then try several colors to measure switching overhead. Results reset on Capture
+or a new queue; copy them before starting another run.
+
+- **Placement ADB**: time spent executing each placement command, including PC
+  process startup, communication and Android command execution.
+- **Random wait (actual)**: measured waiting time, which can exceed the requested
+  delay because of operating-system scheduling. STOP can shorten a wait.
+- **Eyedropper press / Color sample ADB**: commands used to select each color.
+- **Screenshot / Icon matching**: relocation work between color groups.
+- **Overall**: completed placement commands divided by elapsed queue time.
+
+Each category shows its average, maximum, count and total duration. A final JSON
+summary prefixed with `Queue timing:` is printed in the terminal on completion,
+STOP or error. Failed commands are included in the corresponding timing bucket
+and marked as failures. These measurements do not verify that the game accepted
+each tap, or isolate USB time from Android input-command time.
+
 Run the tests from the project directory:
 
 ```powershell

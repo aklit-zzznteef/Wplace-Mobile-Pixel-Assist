@@ -56,6 +56,8 @@
     <aside>
       <h2>Status</h2>
       <div id="status">Prepare the phone, choose your color profile, then capture.</div>
+      <h2>Queue timing</h2>
+      <pre id="timing" class="muted" style="white-space:pre-wrap">Run a queue to measure tap speed.</pre>
 
       <section id="profilePanel">
         <h2>Unlocked-color profile</h2>
@@ -212,7 +214,19 @@
     document.querySelector("#allColours").onclick=()=>{selectedColours=new Set(allColours);renderPalette();};
     document.querySelector("#noColours").onclick=()=>{selectedColours.clear();renderPalette();};
     document.querySelector("#addColour").onclick=()=>{const hex=document.querySelector("#customColour").value.toLowerCase();if(!allColours.includes(hex))allColours.push(hex);selectedColours.add(hex);renderPalette();};
-    setInterval(async()=>{try{const s=await api("/api/status");if(s.state==="running"||queueState!==s.state)setStatus(`${s.message}\n${s.completed}/${s.total} pixels completed. Paint was not pressed.`);queueState=s.state;}catch(_){}},500);
+    function showTiming(t){
+      const box=document.querySelector("#timing");
+      if(!t){box.textContent="Run a queue to measure tap speed.";return;}
+      const labels={placement:"Placement ADB",delay:"Random wait (actual)",eyedropper:"Eyedropper press",sample:"Color sample ADB",screenshot:"Screenshot",tracking:"Icon matching"};
+      const lines=[`Elapsed: ${t.elapsedSeconds.toFixed(2)} s`,`Overall: ${t.pixelsPerSecond.toFixed(2)} pixels/s`];
+      for(const [key,label] of Object.entries(labels)){
+        const b=t.buckets[key];
+        if(b)lines.push(`${label}: ${b.averageMs.toFixed(1)} ms avg, ${b.maxMs.toFixed(1)} ms max; ${b.count} calls, ${b.seconds.toFixed(2)} s total${b.failures?" (includes failed calls)":""}`);
+      }
+      lines.push(`Requested waits: ${t.requestedWaitSeconds.toFixed(2)} s`,`Other work: ${t.otherSeconds.toFixed(3)} s`,"Counts commands completed, not verified game placements.");
+      box.textContent=lines.join("\n");
+    }
+    setInterval(async()=>{try{const s=await api("/api/status");if(s.state==="running"||queueState!==s.state)setStatus(`${s.message}\n${s.completed}/${s.total} pixels completed. Paint was not pressed.`);queueState=s.state;showTiming(s.timing);}catch(_){}},500);
 
     refreshProfileSelect("Default");
   </script>
